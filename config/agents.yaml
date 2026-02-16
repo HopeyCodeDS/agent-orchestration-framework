@@ -1,0 +1,59 @@
+# Agent capability declarations and configuration
+# Referenced by orchestrator for agent registration and timeout management
+
+agents:
+  validator:
+    class: agents.validation_agent.ValidationAgent
+    description: "Schema validation, semantic checks, PII detection, data quality scoring"
+    timeout_sec: 15
+    max_retries: 2
+    circuit_breaker:
+      failure_threshold: 5
+      timeout_sec: 60
+    capabilities:
+      - schema_validation
+      - semantic_validation
+      - pii_detection
+      - data_quality_scoring
+
+  retriever:
+    class: agents.retrieval_agent.RetrievalAgent
+    description: "Hybrid RAG with query decomposition and relevance scoring"
+    timeout_sec: 30
+    max_retries: 3
+    circuit_breaker:
+      failure_threshold: 3
+      timeout_sec: 120
+    capabilities:
+      - vector_search
+      - keyword_search
+      - query_decomposition
+      - relevance_scoring
+
+  reasoner:
+    class: agents.reasoning_agent.ReasoningAgent
+    description: "Tree-of-thoughts, chain-of-thought reasoning with uncertainty quantification"
+    timeout_sec: 45
+    max_retries: 2
+    circuit_breaker:
+      failure_threshold: 3
+      timeout_sec: 90
+    capabilities:
+      - chain_of_thought
+      - tree_of_thoughts
+      - uncertainty_quantification
+      - tool_invocation_planning
+
+  verifier:
+    class: agents.verification_agent.VerificationAgent
+    description: "Fact-checking, hallucination detection, self-consistency validation"
+    timeout_sec: 30
+    max_retries: 2
+    circuit_breaker:
+      failure_threshold: 5
+      timeout_sec: 60
+    capabilities:
+      - fact_checking
+      - hallucination_detection
+      - consistency_validation
+      - citation_tracing

@@ -1,0 +1,46 @@
+# State machine configuration for the orchestrator
+# Defines valid state transitions and behavior per state
+
+orchestration:
+  initial_state: validating
+  max_steps: 10
+
+  states:
+    validating:
+      agent: validator
+      transitions:
+        completed: retrieving
+        failed: failed
+        escalated: failed
+
+    retrieving:
+      agent: retriever
+      transitions:
+        completed: reasoning
+        failed: failed
+        escalated: failed
+
+    reasoning:
+      agent: reasoner
+      transitions:
+        completed: verifying
+        failed: failed
+        escalated: failed
+
+    verifying:
+      agent: verifier
+      transitions:
+        completed: completed
+        failed: reasoning  # Retry reasoning if verification fails
+        escalated: failed
+
+    completed:
+      terminal: true
+
+    failed:
+      terminal: true
+
+  # Escalation rules
+  escalation:
+    max_consecutive_failures: 3
+    escalation_confidence_threshold: 0.3

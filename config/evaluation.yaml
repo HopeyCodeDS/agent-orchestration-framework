@@ -1,0 +1,31 @@
+# Evaluation suite configuration
+
+evaluation:
+  # Scoring thresholds
+  thresholds:
+    accuracy_minimum: 0.7
+    reasoning_fidelity_minimum: 0.6
+    hallucination_maximum: 0.2
+    retrieval_precision_minimum: 0.65
+
+  # Latency budgets (milliseconds)
+  latency:
+    p50_target_ms: 2000
+    p95_target_ms: 5000
+    p99_target_ms: 10000
+
+  # Test case configuration
+  test_cases:
+    directory: evaluation/test_cases
+    formats:
+      - yaml
+      - json
+
+  # Metrics to compute
+  metrics:
+    - accuracy
+    - reasoning_fidelity
+    - retrieval_precision
+    - hallucination_score
+    - latency_p95
+    - agent_contribution_analysis
