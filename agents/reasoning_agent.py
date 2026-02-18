@@ -165,7 +165,10 @@ class ChainOfThoughtReasoner:
                     "You are a precise reasoning agent. Think step by step. "
                     "For each step, state your reasoning clearly and rate your "
                     "confidence (0.0-1.0). Format each step as:\n"
-                    "Step N: [thought] (confidence: X.X)"
+                    "Step N: [thought] (confidence: X.X)\n\n"
+                    "The final step MUST contain your complete direct answer to the "
+                    "question — not a formatting header like '**Answer:**'. "
+                    "Put the answer text itself in the last step."
                 ),
             },
             {
@@ -187,7 +190,7 @@ class ChainOfThoughtReasoner:
         lines = content.strip().split("\n")
         step_num = 0
 
-        for line in lines:
+        for idx, line in enumerate(lines):
             line = line.strip()
             if not line:
                 continue
@@ -223,9 +226,40 @@ class ChainOfThoughtReasoner:
                 )
 
             if step_num >= self.max_steps:
+                # If the last step is a formatting header (e.g. "**Answer:**"),
+                # the real answer text follows on the next lines. Replace the
+                # header thought with that content so it isn't lost.
+                if steps and self._is_header_only(steps[-1].thought):
+                    for next_line in lines[idx + 1 :]:
+                        next_line = next_line.strip()
+                        if next_line and not next_line.lower().startswith("step"):
+                            steps[-1] = ReasoningStep(
+                                step_number=steps[-1].step_number,
+                                thought=next_line,
+                                confidence=steps[-1].confidence,
+                            )
+                            break
                 break
 
         return steps
+
+    @staticmethod
+    def _is_header_only(thought: str) -> bool:
+        """Return True if a thought is just a markdown/formatting header.
+
+        Catches artifacts like "**Answer:**" or "Final Answer:" that LLMs
+        sometimes emit as a transition line instead of putting the answer
+        directly in the step text.
+
+        Args:
+            thought: The step thought string to check.
+
+        Returns:
+            True if the thought has two or fewer content words after stripping
+            markdown characters.
+        """
+        stripped = thought.strip("*:#[]() \t")
+        return len(stripped.split()) <= 2
 
     def _fallback_reasoning(
         self,
@@ -467,8 +501,10 @@ class ReasoningAgent(BaseAgent):
         uncertainty = self.uncertainty.quantify_from_steps(steps)
         confidence = 1.0 - uncertainty["overall_uncertainty"]
 
-        # Final conclusion from last step
-        conclusion = steps[-1].thought
+        # Derive conclusion from the last step that contains real content.
+        # Filters out header-only artifacts ("**Answer:**") the LLM may emit.
+        content_steps = [s for s in steps if not self.cot_reasoner._is_header_only(s.thought)]
+        conclusion = content_steps[-1].thought if content_steps else steps[-1].thought
 
         return AgentResponse(
             agent_id=self.agent_id,
@@ -516,7 +552,10 @@ class ReasoningAgent(BaseAgent):
         step_uncertainty = self.uncertainty.quantify_from_steps(best_branch.steps)
         branch_uncertainty = self.uncertainty.quantify_from_branches(branches)
 
-        conclusion = best_branch.steps[-1].thought
+        content_steps = [
+            s for s in best_branch.steps if not self.cot_reasoner._is_header_only(s.thought)
+        ]
+        conclusion = content_steps[-1].thought if content_steps else best_branch.steps[-1].thought
         confidence = best_branch.score
 
         return AgentResponse(
