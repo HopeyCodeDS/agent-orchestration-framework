@@ -65,9 +65,13 @@ class RelevanceScorer:
         Returns:
             Composite relevance score between 0.0 and 1.0.
         """
-        # Convert distance to similarity (lower distance = higher similarity)
+        # ChromaDB returns L2 (Euclidean) distances by default. For normalized
+        # embeddings (range [0, √2]), L2 relates to cosine similarity by:
+        #   cosine_similarity = 1 - (L2_distance² / 2)
+        # Using 1.0 - distance directly clips to 0 for any distance > 1.0,
+        # which silently discards moderately similar documents.
         distance = result.get("distance", 1.0)
-        similarity = max(0.0, 1.0 - distance)
+        similarity = max(0.0, 1.0 - (distance**2) / 2)
 
         recency = result.get("metadata", {}).get("recency_score", 0.5)
         authority = result.get("metadata", {}).get("authority_score", 0.5)
