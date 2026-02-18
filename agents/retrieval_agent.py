@@ -77,7 +77,7 @@ class RelevanceScorer:
             + recency * self.recency_weight
             + authority * self.authority_weight
         )
-        return min(1.0, max(0.0, weighted))
+        return float(min(1.0, max(0.0, weighted)))
 
     def filter_by_threshold(
         self,
@@ -100,18 +100,20 @@ class VectorStoreClient:
     """Abstraction over vector database operations.
 
     Supports ChromaDB for development and can be extended for Qdrant in production.
+    Uses persistent storage so documents survive between runs.
     """
 
     def __init__(self, config: dict[str, Any]) -> None:
         self.provider: str = config.get("vector_db_provider", "chromadb")
         self.collection_name: str = config.get("collection_name", "default")
+        self.persist_directory: str = config.get("chroma_persist_dir", "./chroma_db")
         self._client: Any = None
         self._collection: Any = None
 
     async def initialize(self) -> None:
         """Initialize the vector store client.
 
-        Lazily creates the ChromaDB client and collection.
+        Lazily creates the ChromaDB client with persistent storage and collection.
         """
         if self._client is not None:
             return
@@ -120,10 +122,8 @@ class VectorStoreClient:
             try:
                 import chromadb
 
-                self._client = chromadb.Client()
-                self._collection = self._client.get_or_create_collection(
-                    name=self.collection_name
-                )
+                self._client = chromadb.PersistentClient(path=self.persist_directory)
+                self._collection = self._client.get_or_create_collection(name=self.collection_name)
             except ImportError:
                 log.warning("retrieval_agent.chromadb_not_available")
                 self._client = None
@@ -167,7 +167,7 @@ class VectorStoreClient:
                 "distance": dist,
                 "metadata": meta or {},
             }
-            for doc, dist, meta in zip(documents, distances, metadatas)
+            for doc, dist, meta in zip(documents, distances, metadatas, strict=False)
         ]
 
     async def add_documents(
@@ -354,4 +354,4 @@ class RetrievalAgent(BaseAgent):
         top_score = max(scores)
 
         # Blend average and top score
-        return min(1.0, avg_score * 0.6 + top_score * 0.4)
+        return float(min(1.0, avg_score * 0.6 + top_score * 0.4))

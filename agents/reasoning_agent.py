@@ -133,6 +133,7 @@ class ChainOfThoughtReasoner:
             log.error(
                 "reasoning_agent.llm_call_failed",
                 error_type=type(exc).__name__,
+                detail=str(exc)[:200],
             )
             steps = self._fallback_reasoning(query, documents)
 
@@ -282,10 +283,7 @@ class ChainOfThoughtReasoner:
         last_output = context.get("last_output", {})
         if isinstance(last_output, dict):
             docs = last_output.get("documents", [])
-            return [
-                d.get("document", str(d)) if isinstance(d, dict) else str(d)
-                for d in docs
-            ]
+            return [d.get("document", str(d)) if isinstance(d, dict) else str(d) for d in docs]
         return []
 
 
@@ -376,10 +374,7 @@ class UncertaintyQuantifier:
         avg_score = sum(scores) / len(scores)
 
         # Agreement: how close are branches in score (high = agree, low = diverge)
-        if best_score > 0:
-            agreement = avg_score / best_score
-        else:
-            agreement = 0.0
+        agreement = avg_score / best_score if best_score > 0 else 0.0
 
         return {
             "branch_agreement": agreement,

@@ -54,10 +54,12 @@ class FactChecker:
                 overlap = 0.0
             else:
                 overlap = len(conclusion_words & source_words) / len(conclusion_words)
-            source_scores.append({
-                "source_index": i,
-                "overlap_score": round(overlap, 3),
-            })
+            source_scores.append(
+                {
+                    "source_index": i,
+                    "overlap_score": round(overlap, 3),
+                }
+            )
 
         best_score = max(s["overlap_score"] for s in source_scores)
         avg_score = sum(s["overlap_score"] for s in source_scores) / len(source_scores)
@@ -118,29 +120,34 @@ class HallucinationDetector:
             1 for indicator in self.HALLUCINATION_INDICATORS if indicator in conclusion.lower()
         )
         if indicator_count > 0:
-            flags.append({
-                "type": "vague_authority",
-                "count": indicator_count,
-                "severity": "medium",
-            })
+            flags.append(
+                {
+                    "type": "vague_authority",
+                    "count": indicator_count,
+                    "severity": "medium",
+                }
+            )
 
-        # Check reasoning chain steps for grounding
+        # Check reasoning chain steps for grounding (only meaningful with sources)
         ungrounded_steps = 0
-        for step in reasoning_chain:
-            thought = step.get("thought", "")
-            if not self._is_grounded(thought, sources):
-                ungrounded_steps += 1
-
         total_steps = len(reasoning_chain)
-        if total_steps > 0:
-            ungrounded_ratio = ungrounded_steps / total_steps
-            if ungrounded_ratio > 0.5:
-                flags.append({
-                    "type": "ungrounded_reasoning",
-                    "ungrounded_steps": ungrounded_steps,
-                    "total_steps": total_steps,
-                    "severity": "high",
-                })
+        if sources:
+            for step in reasoning_chain:
+                thought = step.get("thought", "")
+                if not self._is_grounded(thought, sources):
+                    ungrounded_steps += 1
+
+            if total_steps > 0:
+                ungrounded_ratio = ungrounded_steps / total_steps
+                if ungrounded_ratio > 0.5:
+                    flags.append(
+                        {
+                            "type": "ungrounded_reasoning",
+                            "ungrounded_steps": ungrounded_steps,
+                            "total_steps": total_steps,
+                            "severity": "high",
+                        }
+                    )
 
         # Calculate hallucination score
         score = self._calculate_hallucination_score(indicator_count, ungrounded_steps, total_steps)
@@ -200,11 +207,7 @@ class HallucinationDetector:
             Score between 0.0 (no hallucination) and 1.0 (likely hallucinated).
         """
         indicator_score = min(1.0, indicator_count * 0.3)
-
-        if total_steps > 0:
-            grounding_score = ungrounded_steps / total_steps
-        else:
-            grounding_score = 0.5
+        grounding_score = ungrounded_steps / total_steps if total_steps > 0 else 0.5
 
         return indicator_score * 0.4 + grounding_score * 0.6
 
@@ -247,11 +250,13 @@ class ConsistencyChecker:
                     step_b.get("thought", ""),
                 )
                 if contradiction:
-                    contradictions.append({
-                        "step_a": i,
-                        "step_b": j,
-                        "type": contradiction,
-                    })
+                    contradictions.append(
+                        {
+                            "step_a": i,
+                            "step_b": j,
+                            "type": contradiction,
+                        }
+                    )
 
         # Check conclusion consistency with chain
         conclusion = reasoning_output.get("conclusion", "")
@@ -405,8 +410,7 @@ class VerificationAgent(BaseAgent):
             # Determine if verification passes
             passed = verification_score >= self.verification_threshold
             needs_review = (
-                hallucination_check["likely_hallucinated"]
-                or not consistency_check["consistent"]
+                hallucination_check["likely_hallucinated"] or not consistency_check["consistent"]
             )
 
             if not passed:
@@ -534,6 +538,13 @@ class VerificationAgent(BaseAgent):
     ) -> float:
         """Calculate aggregate verification score.
 
+        When source documents are available, all three checks are weighted:
+          fact_check (35%) + hallucination (35%) + consistency (30%)
+
+        When NO sources are available, fact-checking and grounding checks
+        are unreliable, so the score shifts to consistency-dominant:
+          hallucination_indicators (20%) + consistency (80%)
+
         Args:
             fact_check: Fact-checking results.
             hallucination_check: Hallucination detection results.
@@ -543,13 +554,27 @@ class VerificationAgent(BaseAgent):
             Score between 0.0 and 1.0.
         """
         fact_score = fact_check.get("support_score", 0.0)
-        # Invert hallucination score (lower = better)
-        hallucination_score = 1.0 - hallucination_check.get("hallucination_score", 0.5)
+        hallucination_raw = hallucination_check.get("hallucination_score", 0.5)
+        hallucination_score = 1.0 - hallucination_raw
         consistency_score = consistency_check.get("consistency_score", 0.5)
 
-        # Weighted combination
-        return (
-            fact_score * 0.35
-            + hallucination_score * 0.35
-            + consistency_score * 0.30
-        )
+        has_sources = bool(fact_check.get("source_scores"))
+
+        if has_sources:
+            # Full verification with all three dimensions
+            score: float = (
+                fact_score * 0.35 + hallucination_score * 0.35 + consistency_score * 0.30
+            )
+        else:
+            # No sources: rely on consistency and hallucination indicators only
+            # (grounding checks are meaningless without documents)
+            indicator_flags = [
+                f
+                for f in hallucination_check.get("flags", [])
+                if f.get("type") == "vague_authority"
+            ]
+            indicator_penalty = min(1.0, len(indicator_flags) * 0.3)
+            indicator_score = 1.0 - indicator_penalty
+            score = indicator_score * 0.20 + consistency_score * 0.80
+
+        return score
