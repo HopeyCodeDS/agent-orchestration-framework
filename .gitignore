@@ -66,6 +66,7 @@ Thumbs.db
 # Database
 *.db
 *.sqlite
+chroma_db/
 
 # MinIO
 minio-data/
