@@ -340,6 +340,7 @@ class Orchestrator:
                 "agent_id": response.agent_id,
                 "status": response.status.value,
                 "confidence_score": response.confidence_score,
+                "output": response.output,
             }
         )
         if response.output:

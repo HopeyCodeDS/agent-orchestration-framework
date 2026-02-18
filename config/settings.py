@@ -39,4 +39,4 @@ class AppSettings(BaseSettings):
     otlp_endpoint: str | None = None
     log_level: str = "INFO"
 
-    model_config = {"env_prefix": "AOF_", "env_file": ".env"}
+    model_config = {"env_prefix": "AOF_", "env_file": ".env", "extra": "ignore"}
