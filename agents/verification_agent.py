@@ -16,12 +16,14 @@ log = structlog.get_logger()
 class FactChecker:
     """Checks claims against source documents for factual accuracy.
 
-    Uses textual overlap and semantic matching to verify that
-    conclusions are supported by the retrieved evidence.
+    When an embedding function is provided (via ``embed_fn``), uses cosine
+    similarity over embeddings for semantic matching. Falls back to word-overlap
+    when embeddings are unavailable.
     """
 
-    def __init__(self, config: dict[str, Any]) -> None:
+    def __init__(self, config: dict[str, Any], embed_fn: Any = None) -> None:
         self.support_threshold: float = config.get("support_threshold", 0.3)
+        self.embed_fn = embed_fn  # callable(list[str]) -> list[list[float]] | None
 
     def check_claims(
         self,
@@ -29,6 +31,9 @@ class FactChecker:
         sources: list[str],
     ) -> dict[str, Any]:
         """Verify a conclusion against source documents.
+
+        Uses embedding-based cosine similarity when ``embed_fn`` is set,
+        otherwise falls back to word-overlap scoring.
 
         Args:
             conclusion: The claim or conclusion to verify.
@@ -46,25 +51,48 @@ class FactChecker:
             }
 
         source_scores: list[dict[str, Any]] = []
-        conclusion_words = set(conclusion.lower().split())
 
+        if self.embed_fn is not None:
+            try:
+                embeddings = self.embed_fn([conclusion] + sources)
+                conclusion_vec = embeddings[0]
+                for i, source_vec in enumerate(embeddings[1:]):
+                    sim = self._cosine(conclusion_vec, source_vec)
+                    source_scores.append({"source_index": i, "similarity_score": round(sim, 3)})
+
+                best_score = max(s["similarity_score"] for s in source_scores)
+                avg_score = sum(s["similarity_score"] for s in source_scores) / len(source_scores)
+                support_score = best_score * 0.7 + avg_score * 0.3
+
+                return {
+                    "support_score": round(support_score, 3),
+                    "supported": support_score >= self.support_threshold,
+                    "source_scores": source_scores,
+                    "best_source_index": max(
+                        source_scores, key=lambda s: s["similarity_score"]
+                    )["source_index"],
+                    "method": "semantic",
+                }
+            except Exception as exc:
+                log.warning(
+                    "fact_checker.embedding_failed",
+                    error_type=type(exc).__name__,
+                    detail=str(exc)[:100],
+                )
+                # Fall through to word-overlap
+
+        # Word-overlap fallback
+        conclusion_words = set(conclusion.lower().split())
         for i, source in enumerate(sources):
             source_words = set(source.lower().split())
             if not conclusion_words:
                 overlap = 0.0
             else:
                 overlap = len(conclusion_words & source_words) / len(conclusion_words)
-            source_scores.append(
-                {
-                    "source_index": i,
-                    "overlap_score": round(overlap, 3),
-                }
-            )
+            source_scores.append({"source_index": i, "overlap_score": round(overlap, 3)})
 
         best_score = max(s["overlap_score"] for s in source_scores)
         avg_score = sum(s["overlap_score"] for s in source_scores) / len(source_scores)
-
-        # Weighted blend: best source matters most
         support_score = best_score * 0.7 + avg_score * 0.3
 
         return {
@@ -74,7 +102,26 @@ class FactChecker:
             "best_source_index": max(source_scores, key=lambda s: s["overlap_score"])[
                 "source_index"
             ],
+            "method": "word_overlap",
         }
+
+    @staticmethod
+    def _cosine(a: list[float], b: list[float]) -> float:
+        """Compute cosine similarity between two embedding vectors.
+
+        Pure-Python implementation — no numpy required.
+
+        Args:
+            a: First embedding vector.
+            b: Second embedding vector.
+
+        Returns:
+            Cosine similarity in [0.0, 1.0] (clamped to avoid float errors).
+        """
+        dot = sum(x * y for x, y in zip(a, b))
+        na = sum(x * x for x in a) ** 0.5
+        nb = sum(x * x for x in b) ** 0.5
+        return max(0.0, min(1.0, dot / (na * nb))) if na and nb else 0.0
 
 
 class HallucinationDetector:
@@ -93,8 +140,9 @@ class HallucinationDetector:
         "according to experts",  # Without specific attribution
     ]
 
-    def __init__(self, config: dict[str, Any]) -> None:
+    def __init__(self, config: dict[str, Any], embed_fn: Any = None) -> None:
         self.hallucination_threshold: float = config.get("hallucination_threshold", 0.5)
+        self.embed_fn = embed_fn
 
     def detect(
         self,
@@ -159,22 +207,36 @@ class HallucinationDetector:
             "num_flags": len(flags),
         }
 
-    @staticmethod
-    def _is_grounded(thought: str, sources: list[str]) -> bool:
+    def _is_grounded(self, thought: str, sources: list[str]) -> bool:
         """Check if a thought has any grounding in source documents.
+
+        Uses embedding cosine similarity when ``embed_fn`` is set; otherwise
+        falls back to word-overlap on content words.
 
         Args:
             thought: A reasoning step thought.
             sources: Source documents.
 
         Returns:
-            True if the thought has textual overlap with sources.
+            True if the thought is sufficiently grounded in at least one source.
         """
         if not sources or not thought:
             return False
 
+        if self.embed_fn is not None:
+            try:
+                embeddings = self.embed_fn([thought] + sources)
+                thought_vec = embeddings[0]
+                for source_vec in embeddings[1:]:
+                    sim = FactChecker._cosine(thought_vec, source_vec)
+                    if sim >= 0.3:
+                        return True
+                return False
+            except Exception:
+                pass  # Fall through to word-overlap
+
+        # Word-overlap fallback
         thought_words = set(thought.lower().split())
-        # Remove very common words to focus on content overlap
         stop_words = {"the", "a", "an", "is", "are", "was", "were", "in", "on", "at", "to", "for"}
         thought_content = thought_words - stop_words
 
@@ -363,8 +425,23 @@ class VerificationAgent(BaseAgent):
 
     def __init__(self, config: dict[str, Any]) -> None:
         super().__init__("verifier", config)
-        self.fact_checker = FactChecker(config)
-        self.hallucination_detector = HallucinationDetector(config)
+
+        # Try to use ChromaDB's default embedding model (sentence-transformers/all-MiniLM-L6-v2)
+        # for semantic similarity. Falls back gracefully if chromadb is not installed.
+        embed_fn: Any = None
+        try:
+            from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+
+            embed_fn = DefaultEmbeddingFunction()
+            log.debug("verification_agent.embeddings_enabled", model="all-MiniLM-L6-v2")
+        except Exception as exc:
+            log.debug(
+                "verification_agent.embeddings_unavailable",
+                reason=str(exc)[:80],
+            )
+
+        self.fact_checker = FactChecker(config, embed_fn=embed_fn)
+        self.hallucination_detector = HallucinationDetector(config, embed_fn=embed_fn)
         self.consistency_checker = ConsistencyChecker()
         self.verification_threshold: float = config.get("verification_threshold", 0.5)
 
@@ -380,6 +457,38 @@ class VerificationAgent(BaseAgent):
         try:
             reasoning_output = self._extract_reasoning_output(request)
             sources = self._extract_sources(request)
+
+            # Guard: if the retriever found nothing, verification cannot be meaningful.
+            # On the first retrieval attempt, fail and let the adaptive loop re-retrieve.
+            # On a second miss, escalate — the knowledge base simply lacks coverage.
+            retrieval_confidence = self._extract_retrieval_confidence(request)
+            retrieval_attempt = request.context.get("retrieval_attempt", 1)
+            if retrieval_confidence <= 0.1 and not sources:
+                if retrieval_attempt >= 2:
+                    return AgentResponse(
+                        agent_id=self.agent_id,
+                        status=AgentStatus.ESCALATED,
+                        error=(
+                            "Knowledge base has no coverage for this query after re-retrieval. "
+                            "Human review required."
+                        ),
+                        confidence_score=0.0,
+                        requires_human_review=True,
+                        metadata={
+                            "retrieval_confidence": retrieval_confidence,
+                            "retrieval_attempt": retrieval_attempt,
+                        },
+                    )
+                return AgentResponse(
+                    agent_id=self.agent_id,
+                    status=AgentStatus.FAILED,
+                    error="No relevant documents retrieved; triggering adaptive re-retrieval",
+                    confidence_score=0.0,
+                    metadata={
+                        "retrieval_confidence": retrieval_confidence,
+                        "retrieval_attempt": retrieval_attempt,
+                    },
+                )
 
             if not reasoning_output:
                 return AgentResponse(
@@ -529,6 +638,23 @@ class VerificationAgent(BaseAgent):
                     sources.append(doc)
 
         return [s for s in sources if s]
+
+    @staticmethod
+    def _extract_retrieval_confidence(request: AgentRequest) -> float:
+        """Extract the retriever's confidence score from agent history.
+
+        Args:
+            request: The agent request containing context with agent_history.
+
+        Returns:
+            Float confidence score from the most recent retriever entry, or 1.0
+            if no retriever entry is found (safe default — assume retrieval was fine).
+        """
+        history = request.context.get("agent_history", [])
+        for entry in reversed(history):
+            if isinstance(entry, dict) and entry.get("agent_id") == "retriever":
+                return float(entry.get("confidence_score", 1.0))
+        return 1.0
 
     @staticmethod
     def _calculate_verification_score(
