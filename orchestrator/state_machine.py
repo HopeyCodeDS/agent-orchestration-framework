@@ -112,7 +112,7 @@ class Orchestrator:
         state = OrchestrationState(
             self.config.get("orchestration", {}).get("initial_state", "validating")
         )
-        context: dict[str, Any] = {"task": task, "agent_history": []}
+        context: dict[str, Any] = {"task": task, "agent_history": [], "retrieval_attempt": 0}
         trace: list[dict[str, Any]] = []
 
         log.info(
@@ -122,6 +122,10 @@ class Orchestrator:
         )
 
         for step in range(self.max_steps):
+            # Track retrieval passes so the retrieval agent knows when it is retrying
+            if state == OrchestrationState.RETRIEVING:
+                context["retrieval_attempt"] = context.get("retrieval_attempt", 0) + 1
+
             state_config = self.state_graph.get(state.value, {})
 
             if state_config.get("terminal", False):

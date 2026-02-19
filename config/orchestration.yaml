@@ -31,7 +31,7 @@ orchestration:
       agent: verifier
       transitions:
         completed: completed
-        failed: reasoning  # Retry reasoning if verification fails
+        failed: retrieving  # Re-retrieve fresh documents before re-reasoning
         escalated: failed
 
     completed:
